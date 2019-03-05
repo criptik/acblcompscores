@@ -17,7 +17,8 @@ maxResultsPerBoard = 0
 numResultsBoard = {}
 
 class ResultObj(object):
-    def __init__(self, isNS, score, oppPair):
+    def __init__(self, pnum, isNS, score, oppPair):
+        self.pairnum = pnum
         self.isNS = isNS
         self.score = score
         self.opp = oppPair
@@ -27,8 +28,6 @@ class PairObj(object):
         self.results = {}
         self.name = None
         self.pairnum = pairnum
-        self.vsDup = {}
-        
         
 def MP(diff):
     if diff > 0:
@@ -38,7 +37,18 @@ def MP(diff):
     else:
         return 0
 
-    
+def IMPS(diff):
+    signdiff = 1 if diff >= 0 else -1
+    diff = abs(diff)
+    steps = (20, 50, 90, 130, 170, 220, 270, 320, 370, 430,
+	     500, 600, 750, 900, 1100, 1300, 1500,
+	     1750, 2000, 2250, 2500, 3000, 3500, 4000, 99999)
+    for i in range(25):
+        if (diff < steps[i]):
+            impval = i * signdiff
+            # print('diff=%d, imps=%d' % (diff, impval))
+            return impval
+        
 def handleScoreLine(bd, m):
     global isMitchell
     # print('<%s> <%s> %s %s %s %s' % (m[1], m[2], m[3], m[4], m[5], m[6]))
@@ -62,7 +72,7 @@ def handleScoreLine(bd, m):
     NSName = m[3]
     EWPair = int(m[4])
     EWName = m[5]
-    print('handle score line for bd %d, ns %d, ew %d' % (bd, NSPair, EWPair))
+    # print('handle score line for bd %d, ns %d, ew %d' % (bd, NSPair, EWPair))
     
     # if first round shows that NSPair is playing same number EWPair, then it must be a mitchell movement
     if NSPair == EWPair:
@@ -77,14 +87,13 @@ def handleScoreLine(bd, m):
     if PairData.get(EWPair) == None:
         PairData[EWPair] = PairObj(EWPair)
     
-    PairData[NSPair].results[bd] = ResultObj(True, nsscore, EWPair)
-    PairData[EWPair].results[bd] = ResultObj(False, ewscore, NSPair)
+    PairData[NSPair].results[bd] = ResultObj(NSPair, True, nsscore, EWPair)
+    PairData[EWPair].results[bd] = ResultObj(EWPair, False, ewscore, NSPair)
     PairData[NSPair].name = NSName
     PairData[EWPair].name = EWName
 
-
-def dumpPairData():
-    print(json.dumps(PairData, indent=1, default=lambda x: x.__dict__))
+def dumpData(obj):
+    print(json.dumps(obj, indent=1, default=lambda x: x.__dict__))
 
 #=========================================    
 # main program
@@ -107,7 +116,7 @@ with open(args.file) as fp:
             currBoard = int(m[1])
             highestBoard = currBoard
             resultsPerBoard = 0
-            print('currBoard =', currBoard)
+            # print('currBoard =', currBoard)
             continue
         # line which matches traveler entry
         # the first section (with scores or PASS)will be parsed in handleScoreLine
@@ -123,9 +132,9 @@ with open(args.file) as fp:
             continue
         # print(line.rstrip())
 maxResultsPerBoard = max(maxResultsPerBoard, resultsPerBoard)
-print('maxPerBoard = %d' % (maxResultsPerBoard))
+print('maxResultsPerBoard = %d' % (maxResultsPerBoard))
 if False:
-    dumpPairData()
+    dumpData(PairData)
 
 # for each of pair on each board compute a "duplicate" score
 for bd in range(1, highestBoard+1):
@@ -147,6 +156,10 @@ for bd in range(1, highestBoard+1):
             # print ('%d : %d,%d  --> %d' % (bd, pra, prb, diff))
             if args.scoreKind == 'MP':
                 dup = MP(diff)
+            elif args.scoreKind == 'TP':
+                dup = diff
+            elif args.scoreKind == 'IMP':
+                dup = IMPS(diff)
             else:
                 # todo: handle other scoring types like TP or IMP
                 print('%s scoring not supported yet' % (args.scoreKind))
@@ -180,10 +193,65 @@ for pnum in sorted(PairData.keys()):
     if args.scoreKind == 'MP' and numBoards != highestBoard:
         dupTotal = dupTotal * (highestBoard/numBoards)
     dupTotals[pnum] = dupTotal
-    print('dupTotal for pair %d is %.2f' % (pnum, dupTotal), end='')
+
+def byDupTotal(pnum):
+    return dupTotals[pnum]
+
+for pnum in sorted(dupTotals.keys(), key=byDupTotal, reverse=True):
+    print('dupTotal for pair %d is %+9.2f' % (pnum, dupTotals[pnum]), end='')
     if args.scoreKind == 'MP':
         maxPossible = highestBoard * (maxResultsPerBoard - 1)
         pct = 100 * dupTotal / maxPossible
         print(' or %.2f%%' % (pct))
     else:
         print()
+
+
+# show the results on each board
+def byDup(result):
+    return result.dup
+
+for bd in range(1, highestBoard+1):
+    results = {}
+    for pnum in sorted(PairData.keys()):
+        result = PairData[pnum].results.get(bd)
+        if result != None:
+            results[pnum] = result
+    # show sorted by dup score
+    print()
+    print('Board', bd)
+    for result in (sorted(results.values(), key=byDup, reverse=True)):
+        if not result.isNS:
+            continue
+        if args.scoreKind == 'MP':
+            dupStr = '%6.2f' % (result.dup)
+        else:
+            dupStr = '%+6d' % (result.dup)
+        print('%6d  %s  %d-%s vs. %d-%s' % (result.score, dupStr, result.pairnum, PairData[result.pairnum].name, result.opp, PairData[result.opp].name))
+
+#show results sorted by opp
+for pnum in sorted(PairData.keys()):
+    vsDup = {}
+    numResults = {}
+    for bd in range(1, highestBoard+1):
+        result = PairData[pnum].results.get(bd)
+        if result == None:
+            continue
+        oldDup = vsDup.get(result.opp, 0)
+        newDup = oldDup + result.dup
+        vsDup[result.opp] = newDup
+        oldNum = numResults.get(result.opp, 0)
+        newNum = oldNum + 1
+        numResults[result.opp] = newNum
+    def byVsDup(pnum):
+        return vsDup[pnum]
+    print()
+    print('pair %d-%s' % (pnum, PairData[pnum].name))
+    for opp in sorted(vsDup.keys(), key=byVsDup, reverse=True):
+        print('vs. %2d-%-25s  %5.2f' % (opp, PairData[opp].name, vsDup[opp]), end='')
+        if args.scoreKind == 'MP':
+            pct = 100 * vsDup[opp]/(numResults[opp] * (maxResultsPerBoard - 1))
+            print(', (%2.0f%%)' % (pct), end='')
+        print()
+            
+sys.exit(1)
